@@ -1,0 +1,22 @@
+# Secrets
+config/api_keys.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Logs
+logs/
+
+# Generated / runtime data
+outputs/
+data/cache/
+data/processed/
+
+# Assets (kept local only, not versioned)
+assets/
+
+# OS
+.DS_Store
+Thumbs.db

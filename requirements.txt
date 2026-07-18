@@ -1,0 +1,19 @@
+# adDominum - X automation for Catholic devotional content
+# Install with: pip install -r requirements.txt
+
+# Image card generation
+Pillow>=10.0.0
+
+# Post scheduling and queue management
+pandas>=2.0.0
+
+# Configuration and environment variables
+PyYAML>=6.0
+python-dotenv>=1.0.0
+
+# X (Twitter) API
+tweepy>=4.14.0
+
+# Papal feed - RSS parsing and HTTP requests
+feedparser>=6.0.0
+requests>=2.28.0

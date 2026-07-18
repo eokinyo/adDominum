@@ -1,0 +1,16 @@
+dry_run: false
+loop_forever: true
+
+# Posts per day — a random number between these is chosen each morning
+posts_per_day_min: 4
+posts_per_day_max: 10
+
+# Posting window (local time, 24h)
+post_window_start: 8
+post_window_end: 20
+
+# Queue settings
+quote_to_history_ratio: 3
+queue_max_size: 300
+queue_cache_hours: 6
+max_post_length: 280
