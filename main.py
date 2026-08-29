@@ -3,14 +3,20 @@
 adDominum — Main entry point.
 
 Run:
-    python main.py           # continuous loop
+    python main.py           # run today's plan, then exit
     python main.py --once    # single post and exit
     python main.py --live    # override dry_run from command line
 
 Posting window: 08:00 — 20:00 local time.
 Posts per day: randomly chosen between 4 and 10 each morning.
-The window (720 minutes) is divided by the chosen number, giving
-the base interval, with ±15 minutes of jitter on each post.
+
+The script now runs ONE day's plan and exits cleanly after the final post.
+Windows Task Scheduler restarts it at 07:58 the next morning. Nothing idles
+overnight, and there is no path back into the loop once the plan is done.
+
+If the script starts late (e.g. the PC was off at 08:00 and the task fired
+on boot at 14:00), the plan is built across the REMAINING window rather than
+from 08:00 — so it never dumps a backlog of posts all at once.
 """
 
 from __future__ import annotations
@@ -33,11 +39,75 @@ logger = setup_logging("main")
 
 WINDOW_START  = config.get("post_window_start", 8)
 WINDOW_END    = config.get("post_window_end",  20)
-WINDOW_MINS   = (WINDOW_END - WINDOW_START) * 60   # 720 minutes
 POSTS_MIN     = config.get("posts_per_day_min", 4)
 POSTS_MAX     = config.get("posts_per_day_max", 10)
 JITTER_MINS   = 15    # ± minutes of randomness around the base interval
-SLEEP_CHECK   = 15 * 60
+MIN_GAP_MINS  = 25    # never schedule two posts closer than this
+GRACE_MINS    = 20    # a target older than this is skipped, not fired late
+HEARTBEAT     = 15 * 60   # log a "still waiting" line this often
+
+
+# =========================================================
+# WINDOW HELPERS
+# =========================================================
+def window_open_at(d: date) -> datetime:
+    return datetime(d.year, d.month, d.day, WINDOW_START, 0, 0)
+
+
+def window_close_at(d: date) -> datetime:
+    return datetime(d.year, d.month, d.day, WINDOW_END, 0, 0)
+
+
+def in_posting_window() -> bool:
+    hour = datetime.now().hour
+    return WINDOW_START <= hour < WINDOW_END
+
+
+def sleep_until_window() -> bool:
+    """
+    Sleep until today's window opens.
+
+    Returns True if we are (now) inside the window, False if the window has
+    already closed for today — in which case the caller should exit and let
+    the scheduler start us again tomorrow.
+    """
+    now = datetime.now()
+
+    if in_posting_window():
+        return True
+
+    if now.hour >= WINDOW_END:
+        return False
+
+    opens = window_open_at(now.date())
+    secs  = (opens - now).total_seconds()
+    logger.info(
+        f"Window opens at {opens.strftime('%H:%M')} — "
+        f"sleeping {int(secs // 60)} minutes."
+    )
+    time.sleep(max(0, secs))
+    return True
+
+
+def wait_until(target: datetime) -> None:
+    """Sleep until the target time, with a heartbeat line every 15 minutes."""
+    while True:
+        now = datetime.now()
+        remaining = (target - now).total_seconds()
+
+        if remaining <= 0:
+            return
+
+        if remaining > HEARTBEAT:
+            logger.info(
+                f"Next post at {target.strftime('%H:%M')} — "
+                f"{int(remaining // 60)} min remaining."
+            )
+            time.sleep(HEARTBEAT)
+        else:
+            # Single final sleep. Never loops tightly: even at 1 second
+            # remaining this sleeps a full second before re-checking.
+            time.sleep(max(1.0, remaining))
 
 
 # =========================================================
@@ -46,82 +116,56 @@ SLEEP_CHECK   = 15 * 60
 def make_daily_plan() -> tuple[int, int, list[datetime]]:
     """
     Decide how many posts to make today and calculate target times.
-    Returns (posts_planned, interval_mins, [target_datetimes])
+
+    The plan spans from now (or window open, whichever is later) to window
+    close, so a late start produces a sensible smaller plan instead of a
+    backlog. Returns (posts_planned, interval_mins, [target_datetimes]).
     """
-    n        = random.randint(POSTS_MIN, POSTS_MAX)
-    interval = WINDOW_MINS // n          # base interval in minutes
+    now    = datetime.now()
+    today  = now.date()
+    opens  = window_open_at(today)
+    closes = window_close_at(today)
 
-    # Build target post times starting from window open
-    today     = date.today()
-    window_open = datetime(today.year, today.month, today.day,
-                           WINDOW_START, 0, 0)
+    start     = max(opens, now + timedelta(minutes=2))
+    remaining = int((closes - start).total_seconds() // 60)
 
-    targets = []
-    t = window_open
+    if remaining < MIN_GAP_MINS:
+        logger.info(
+            f"Only {remaining} minutes left in today's window — "
+            f"not enough time for a meaningful plan."
+        )
+        return 0, 0, []
+
+    n = random.randint(POSTS_MIN, POSTS_MAX)
+
+    # Don't cram posts together if we started late.
+    max_n = max(1, remaining // MIN_GAP_MINS)
+    if n > max_n:
+        logger.info(
+            f"Late start — reducing today's plan from {n} to {max_n} posts "
+            f"to keep at least {MIN_GAP_MINS} minutes between them."
+        )
+        n = max_n
+
+    interval = remaining // n
+
+    targets: list[datetime] = []
+    t = start
     for i in range(n):
-        # Add jitter: ±JITTER_MINS, but keep within window
-        jitter = random.randint(-JITTER_MINS, JITTER_MINS)
+        jitter = 0 if i == 0 else random.randint(-JITTER_MINS, JITTER_MINS)
         post_t = t + timedelta(minutes=jitter)
-
-        # Clamp to window bounds
-        window_close = datetime(today.year, today.month, today.day,
-                                WINDOW_END, 0, 0)
-        post_t = max(window_open, min(post_t, window_close - timedelta(minutes=5)))
+        post_t = max(start, min(post_t, closes - timedelta(minutes=5)))
         targets.append(post_t)
         t += timedelta(minutes=interval)
 
+    targets.sort()
+
     logger.info(
-        f"Daily plan: {n} posts | "
-        f"~{interval} min intervals | "
+        f"Daily plan: {n} posts | ~{interval} min intervals | "
         f"First at {targets[0].strftime('%H:%M')} | "
         f"Last at {targets[-1].strftime('%H:%M')}"
     )
     return n, interval, targets
-
-
-# =========================================================
-# WINDOW HELPERS
-# =========================================================
-def in_posting_window() -> bool:
-    hour = datetime.now().hour
-    return WINDOW_START <= hour < WINDOW_END
-
-
-def wait_until(target: datetime) -> None:
-    """Sleep until the target time, logging progress every 15 minutes."""
-    while True:
-        now = datetime.now()
-        if now >= target:
-            return
-        remaining = (target - now).total_seconds()
-        if remaining > SLEEP_CHECK:
-            logger.info(
-                f"Next post at {target.strftime('%H:%M')} — "
-                f"waiting ({int(remaining // 60)} min remaining)..."
-            )
-            time.sleep(SLEEP_CHECK)
-        else:
-            time.sleep(max(1, remaining - 5))  # wake up a few secs early
-
-
-def wait_for_window() -> None:
-    """Sleep until the posting window opens."""
-    while not in_posting_window():
-        now       = datetime.now()
-        tomorrow  = now + timedelta(days=1)
-        wake_time = datetime(tomorrow.year, tomorrow.month, tomorrow.day,
-                             WINDOW_START, 0, 0)
-        if now.hour < WINDOW_START:
-            wake_time = datetime(now.year, now.month, now.day,
-                                 WINDOW_START, 0, 0)
-
-        logger.info(
-            f"Outside posting window ({WINDOW_START:02d}:00–{WINDOW_END:02d}:00). "
-            f"Current time: {now.strftime('%H:%M')}. "
-            f"Window opens at {wake_time.strftime('%H:%M')}. "
-            f"Checking again in 15 minutes..."
-        )
-        time.sleep(SLEEP_CHECK)
 
 
 # =========================================================
@@ -176,6 +220,50 @@ def run_cycle(poster: Poster) -> bool:
 
 
 # =========================================================
+# RUN ONE DAY
+# =========================================================
+def run_day(poster: Poster) -> int:
+    """
+    Work through today's plan, then return the number of successful posts.
+    This function always terminates — there is no unbounded loop in it.
+    """
+    _, _, targets = make_daily_plan()
+    if not targets:
+        return 0
+
+    posted = 0
+    total  = len(targets)
+
+    for i, target in enumerate(targets, start=1):
+        now = datetime.now()
+
+        # Target already well in the past — skip rather than fire late.
+        if now > target + timedelta(minutes=GRACE_MINS):
+            logger.info(
+                f"Skipping post {i} of {total} — scheduled "
+                f"{target.strftime('%H:%M')} has already passed."
+            )
+            continue
+
+        if now < target:
+            logger.info(
+                f"Post {i} of {total} scheduled at {target.strftime('%H:%M')} "
+                f"({int((target - now).total_seconds() // 60)} min away)."
+            )
+            wait_until(target)
+
+        try:
+            if run_cycle(poster):
+                posted += 1
+        except Exception as e:
+            logger.error(f"Post {i} of {total} failed with an error: {e}")
+            logger.info("Continuing to the next scheduled post.")
+            time.sleep(60)
+
+    return posted
+
+
+# =========================================================
 # MAIN
 # =========================================================
 def main():
@@ -201,74 +289,31 @@ def main():
 
     poster = Poster()
 
-    if args.once or not config.loop_forever:
-        run_cycle(poster)
-        return
-
-    logger.info("Starting continuous loop...")
-    current_day  = None
-    targets      = []
-    target_index = 0
-
-    while True:
-        try:
-            # Wait until we're in the posting window
-            wait_for_window()
-
-            today = date.today()
-
-            # New day — build a fresh plan
-            if today != current_day:
-                current_day  = today
-                _, _, targets = make_daily_plan()
-                target_index = 0
-                logger.info(
-                    f"New day plan: {len(targets)} posts scheduled "
-                    f"between {targets[0].strftime('%H:%M')} "
-                    f"and {targets[-1].strftime('%H:%M')}"
-                )
-
-            # All posts for today done — wait for tomorrow
-            if target_index >= len(targets):
-                logger.info(
-                    f"All {len(targets)} posts completed for today. "
-                    f"Waiting for tomorrow's window..."
-                )
-                wait_for_window()
-                continue
-
-            # Wait until the next scheduled post time
-            next_target = targets[target_index]
-            now         = datetime.now()
-
-            if now < next_target:
-                logger.info(
-                    f"Next post scheduled at {next_target.strftime('%H:%M')} "
-                    f"({int((next_target - now).total_seconds() // 60)} min away) "
-                    f"— post {target_index + 1} of {len(targets)} today"
-                )
-                wait_until(next_target)
-
-            # Post
+    try:
+        if args.once or not config.loop_forever:
             run_cycle(poster)
-            target_index += 1
+            return
 
-            # Show next post time if there is one
-            if target_index < len(targets):
-                nxt = targets[target_index]
-                mins = int((nxt - datetime.now()).total_seconds() // 60)
-                logger.info(
-                    f"Next post attempt at {nxt.strftime('%H:%M')} "
-                    f"({mins} minutes)"
-                )
+        if not sleep_until_window():
+            logger.info(
+                f"Today's posting window has already closed. Exiting — "
+                f"the scheduler will start me again at "
+                f"{WINDOW_START:02d}:00 tomorrow."
+            )
+            return
 
-        except KeyboardInterrupt:
-            logger.info("Shutting down gracefully")
-            sys.exit(0)
-        except Exception as e:
-            logger.error(f"Unexpected error: {e}")
-            logger.info("Waiting 5 minutes before retry...")
-            time.sleep(300)
+        posted = run_day(poster)
+
+        logger.info("=" * 55)
+        logger.info(
+            f"  Daily plan complete — {posted} posts made. "
+            f"Exiting until {WINDOW_START:02d}:00 tomorrow."
+        )
+        logger.info("=" * 55)
+
+    except KeyboardInterrupt:
+        logger.info("Shutting down gracefully")
+        sys.exit(0)
 
 
 if __name__ == "__main__":
