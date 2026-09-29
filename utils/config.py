@@ -5,11 +5,20 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# X credentials: the secrets file outside OneDrive wins; the legacy in-repo
+# file (gitignored) is only a fallback so an older setup keeps working.
+# Override the secrets path with the ADDOMINUM_ENV environment variable.
+SECRETS_ENV_FILE = Path(os.environ.get("ADDOMINUM_ENV", Path.home() / ".secrets" / "x-addominum.env"))
+LEGACY_ENV_FILE = BASE_DIR / "config" / "api_keys.env"
+ENV_FILE_USED: Path | None = None
+
 try:
     from dotenv import load_dotenv
-    env_file = BASE_DIR / "config" / "api_keys.env"
-    if env_file.exists():
-        load_dotenv(env_file)
+    for _candidate in (SECRETS_ENV_FILE, LEGACY_ENV_FILE):
+        if _candidate.is_file():
+            load_dotenv(_candidate)
+            ENV_FILE_USED = _candidate
+            break
 except ImportError:
     pass
 
@@ -56,6 +65,7 @@ class Config:
     def __repr__(self):
         return (f"Config(dry_run={self.dry_run}, "
                 f"interval={self.min_interval_minutes}-{self.max_interval_minutes}min, "
-                f"credentials={'yes' if self.has_credentials else 'missing'})")
+                f"credentials={'yes' if self.has_credentials else 'missing'}, "
+                f"env_file={ENV_FILE_USED.name if ENV_FILE_USED else 'none'})")
 
 config = Config()
