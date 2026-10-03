@@ -4,7 +4,7 @@
 #   - Sunday at 12:30 PM
 # Run as Administrator
 
-$ProjectDir = "C:\Users\ellyo\OneDrive\Work\X\Automation\adDominum"
+$ProjectDir = "C:\Projects\adDominum"
 $PythonExe  = (Get-Command python).Source
 
 function Register-PapalTask {

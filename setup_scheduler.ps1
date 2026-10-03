@@ -20,7 +20,7 @@
 $ErrorActionPreference = "Stop"
 
 $TaskName    = "adDominum Daily Posting"
-$ProjectDir  = "C:\Users\ellyo\OneDrive\Work\X\Automation\adDominum"
+$ProjectDir  = "C:\Projects\adDominum"
 $BatchFile   = Join-Path $ProjectDir "start_addominum.bat"
 $StartTime   = "07:58"
 

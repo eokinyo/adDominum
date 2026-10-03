@@ -3,7 +3,7 @@ import sys
 import re
 import requests
 
-BASE_DIR_STR = "C:\\Users\\ellyo\\OneDrive\\Work\\X\\Automation\\adDominum"
+BASE_DIR_STR = "C:\\Projects\\adDominum"
 sys.path.insert(0, BASE_DIR_STR)
 
 url = "https://www.vatican.va/content/leo-xiv/en/audiences/2026/documents/20260617-udienza-generale.html"
