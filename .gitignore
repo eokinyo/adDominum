@@ -28,3 +28,7 @@ Thumbs.db
 !*.example
 *.key
 *.pem
+
+# Runtime flags
+*.flag
+

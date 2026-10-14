@@ -574,10 +574,12 @@ def format_papal_post(article: dict) -> tuple[str, Path | None]:
     today        = date.today()
     weekday      = today.weekday()
 
-    # Label
-    if weekday == 2:
+    # Label from the article type, not today's weekday: a catch-up can post
+    # an Angelus on a Wednesday or an audience on a Sunday.
+    atype = str(article.get("type", "")).lower()
+    if "audience" in atype:
         label = "Wednesday Audience — Pope Leo XIV"
-    elif weekday == 6:
+    elif "angelus" in atype:
         label = "Angelus — Pope Leo XIV"
     else:
         label = "Pope Leo XIV"
@@ -603,6 +605,14 @@ def format_papal_post(article: dict) -> tuple[str, Path | None]:
         logger.warning(f"Card generation failed: {e}")
 
     return post_text, card_path
+
+
+def write_papal_done_flag() -> None:
+    """Mark today's papal run as done (read by start_addominum.bat logon catch-up)."""
+    from datetime import datetime as _dt
+    flag = BASE_DIR / "logs" / f"papal-done-{_dt.now().strftime('%Y%m%d')}.flag"
+    flag.parent.mkdir(parents=True, exist_ok=True)
+    flag.write_text("done\n", encoding="utf-8")
 
 
 # =========================================================
@@ -645,6 +655,8 @@ def main():
     # Skip if already posted (belt and braces — the fetchers filter too)
     if article["url"] in posted_urls and not args.force:
         logger.info(f"Already posted: {article['title']}")
+        if not dry_run:
+            write_papal_done_flag()
         return
 
     logger.info(f"Found: {article['title']}")
@@ -672,6 +684,7 @@ def main():
     if success:
         save_papal_log(article["url"], article["title"])
         logger.info("Posted and logged.")
+        write_papal_done_flag()
         if card_path and card_path.exists():
             card_path.unlink()
     else:
